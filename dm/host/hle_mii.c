@@ -135,6 +135,7 @@ static void mii_db_load(void) {
     else { g_mii_n += r; LOG("mii: %d Miis made in the host's editor, from %s", r, p); }
 }
 static void mii_db_once(void) { static pthread_once_t once = PTHREAD_ONCE_INIT; pthread_once(&once, mii_db_load); }
+void dm_mii_default_charinfo(void *out) { mii_default(out, 0, 0); }   // default Mii 0 (male), as Database::Get returns it first
 
 // The object keeps its service pointer at +0, which the constructor zeroes and the destructor releases through its vtable when set; the host never sets it
 HLE_FORCE("_ZN2nn3mii8Database10InitializeEv", "mii:u service; the host's database: the six default Miis, the console's own when supplied, those made in AppendMii", Result, h_mii_Init, void *self) {

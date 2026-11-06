@@ -223,6 +223,9 @@ int hle_map_transfer_memory(hle_transfer_mapping *mapping, uint32_t handle, uint
 void hle_unmap_transfer_memory(hle_transfer_mapping *mapping);
 uint32_t hle_dup_readable_handle(uint32_t h);   // hle_thread.c: a second read end of a kernel event (the copy a service hands its client), 0 if h is no read end
 int hle_signal_event_handle(uint32_t write_end);   // hle_thread.c: signal a host-made kernel event by its write end (any thread); 0 once that end is closed
+void dm_mii_default_charinfo(void *out);   // hle_mii.c: write the default Mii 0 as a 0x58-byte CharInfo
+int dm_amiibo_scan(const char *amiibo_id, const char *name, int random_uuid);   // hle_nfp.c: place the virtual amiibo; 1 when placed, 0 when the game is not searching
+int dm_amiibo_searching(void);   // hle_nfp.c: 1 while the game searches for a tag
 // Page fault hook / hook before the host writes guest memory (crash.c; used for write-protect dirty page tracking)
 void dm_fault_hook_register(int (*fn)(void *addr, int is_write, void *uc));
 void dm_guest_write_prep_register(void (*fn)(void *addr, size_t len));
