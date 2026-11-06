@@ -2,6 +2,7 @@
 // One JSON file per amiibo, <amiibo folder>/<amiibo ID>.json, in the format of Ryujinx's VirtualAmiiboFile
 // (FileVersion, TagUuid, AmiiboId, FirstWriteDate, LastWriteDate, WriteCounter, ApplicationAreas, NickName), so that Ryujinx's files can be used as they are.
 // The folder is $DM_AMIIBO_DIR, else <$DM_SAVE>_amiibo, else ./amiibo. Unknown top-level members are kept verbatim and written back.
+#include <stdatomic.h>
 #include "hle.h"
 #include <stdlib.h>
 #include <string.h>
@@ -384,10 +385,18 @@ int dm_amiibo_scan(const char *amiibo_id, const char *name, int random_uuid) {
 }
 int dm_amiibo_searching(void) { nfp_lock(); int r = g_nfp_state == NFP_STATE_SEARCH; nfp_unlock(0); return r; }
 
-HLE_FORCE("_ZN2nn3nfp10InitializeEv", "amiibo library init; one NFC device with the virtual amiibo", void, h_nfp_Init, void) {
-    nfp_lock(); g_nfp_state = NFP_STATE_INIT; g_nfp_area_open = 0;
-    LOG("nfp::Initialize: virtual amiibo, folder %s", amiibo_dir()); nfp_unlock(0);
+static _Atomic int g_nfp_lib;   // the library state GetState answers, as on Horizon: 0 until Initialize, 1 until Finalize (Breath of the Wild and Tears of the Kingdom attach their availability event only when it is not 1)
+static void nfp_init(const char *call) {
+    nfp_lock(); g_nfp_state = NFP_STATE_INIT; g_nfp_area_open = 0; atomic_store(&g_nfp_lib, 1);
+    LOG("nfp::%s: virtual amiibo, folder %s", call, amiibo_dir()); nfp_unlock(0);
 }
+HLE_FORCE("_ZN2nn3nfp10InitializeEv", "amiibo library init; one NFC device with the virtual amiibo", void, h_nfp_Init, void) { nfp_init("Initialize"); }
+// Kirby Air Riders initializes it with this one instead; no virtual amiibo has an extended application area
+HLE_FORCE("_ZN2nn3nfp37InitializeWithExtendedApplicationAreaEv", "amiibo library init with the extended application area; the same device", void, h_nfp_InitExt, void) { nfp_init("InitializeWithExtendedApplicationArea"); }
+HLE_FORCE("_ZN2nn3nfp26GetExtendedApplicationAreaEPvPmRKNS0_12DeviceHandleEm", "read extended application area: a virtual amiibo has none", Result, h_nfp_GetAreaExt, void *buf, uint64_t *n, const NfpDeviceHandle *h, uint64_t sz) { (void)buf; (void)n; (void)h; (void)sz; return NFP_RES_TAG_NOT_FOUND; }
+HLE_FORCE("_ZN2nn3nfp26SetExtendedApplicationAreaERKNS0_12DeviceHandleEPKvm", "write extended application area: a virtual amiibo has none", Result, h_nfp_SetAreaExt, const NfpDeviceHandle *h, const void *buf, uint64_t sz) { (void)h; (void)buf; (void)sz; return NFP_RES_TAG_NOT_FOUND; }
+HLE_FORCE("_ZN2nn3nfp30GetExtendedApplicationAreaInfoEPNS0_27ExtendedApplicationAreaInfoERKNS0_12DeviceHandleE", "extended application area info: a virtual amiibo has none", Result, h_nfp_AreaExtInfo, void *out, const NfpDeviceHandle *h) { (void)out; (void)h; return NFP_RES_TAG_NOT_FOUND; }
+HLE_FORCE("_ZN2nn3nfp7RestoreERKNS0_12DeviceHandleE", "restore tag: a virtual amiibo is never damaged", Result, h_nfp_Restore, const NfpDeviceHandle *h) { (void)h; return NFP_RES_TAG_NOT_FOUND; }
 HLE_FORCE("_ZN2nn3nfp29AttachAvailabilityChangeEventEPNS_2os15SystemEventTypeE", "NFC availability change event; bound to a kernel event, never signalled", void, h_nfp_AttachAvail, void *ev) { hle_bind_system_event(ev, 0); }
 HLE_FORCE("_ZN2nn3nfp11ListDevicesEPNS0_12DeviceHandleEPii", "NFC device list: one device", Result, h_nfp_List, NfpDeviceHandle *out, int *n, int max) {
     *n = 0; if (max >= 1) { memset(&out[0], 0, sizeof out[0]); out[0].id = NFP_DEVICE_ID; *n = 1; }
@@ -478,11 +487,11 @@ HLE_FORCE("_ZN2nn3nfp15GetRegisterInfoEPNS0_12RegisterInfoERKNS0_12DeviceHandleE
     snprintf((char *)o + 0x5c, 0x29, "%s", g_nfp_file.nick);   // amiibo nickname, UTF-8; font region 0 at 0x85
     return nfp_unlock(RES_OK);
 }
-HLE_FORCE("_ZN2nn3nfp8GetStateEv", "amiibo library state: initialized (1)", int, h_nfp_LibState, void) { return 1; }
+HLE_FORCE("_ZN2nn3nfp8GetStateEv", "amiibo library state: uninitialized (0) / initialized (1)", int, h_nfp_LibState, void) { return atomic_load(&g_nfp_lib); }
 HLE_FORCE("_ZN2nn3nfp8FinalizeEv", "amiibo library finalize: the scanned tag is gone", void, h_nfp_Fini, void) {
     nfp_lock(); g_nfp_state = NFP_STATE_INIT; g_nfp_area_open = 0;
     if (g_nfp_loaded) amiibo_free(&g_nfp_file);
-    g_nfp_loaded = 0; nfp_unlock(0);
+    g_nfp_loaded = 0; atomic_store(&g_nfp_lib, 0); nfp_unlock(0);
 }
 HLE_FORCE_BIG("_ZN2nn3nfp5FlushERKNS0_12DeviceHandleE", "flush tag: the host writes the amiibo file on each change; nothing to do", Result, h_nfp_Flush, const NfpDeviceHandle *h) {
     nfp_lock(); return nfp_unlock(nfp_need_mount(h));
