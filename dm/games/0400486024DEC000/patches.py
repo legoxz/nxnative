@@ -147,6 +147,13 @@ if _uw:
         (0xecbc80, struct.pack('<I', 0x52A8A409).hex(), struct.pack('<I', 0x52A00009 | _f << 5).hex(), 'ultrawide: output width 2560.0f → %d.0f' % _width(1440)),
         (0x3f58540, struct.pack('<14I', *_table).hex(), struct.pack('<14I', *_wide).hex(), 'ultrawide: output resolution table widths from their heights'),
     ]
+    # MATCH_CUTS reaches only a main with no CUTS, and DM_ULTRAWIDE gives v131072's main CUTS: the movie cuts go with them there
+    CUTS['e0f3ccfaf50065ae4ea01eb5aeb13b1a'] += [
+        (0x3b5d084, '88b79c1a', '48008052', movie_pictures + ' (cinc w8, w28, ge → mov w8, #2)'),
+        (0x3b5cb20, '092040b9', '69008052', movie_cap + ' (ldr w9, [x0, #0x20] → mov w9, #3)'),
+        (0x3b5c7c4, '88fa42b908050011', '880a40f9080d40b9', movie_frame + ' (ldr w8, [x20, #0x2f8]; add w8, w8, #1 → ldr x8, [x20, #0x10]; ldr w8, [x8, #0xc])'),
+        (0x3b5c908, '88fa42b908050011', '880a40f9080d40b9', movie_frame + ' (the same, the first draw)'),
+    ]
 
 BINDING = [
     {'what': 'movie pictures a frame: up to 2', 'now': 'game', 'goal': 'game', 'purpose': 'frame rate',
