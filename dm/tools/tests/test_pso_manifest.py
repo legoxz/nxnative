@@ -19,6 +19,7 @@ def row_ok(row):
     if f[0] == 'C': return len(f) == 2 and KEY.fullmatch(f[1]) is not None
     if f[0] == 'R': return len(f) == 2 and HEX.fullmatch(f[1]) is not None
     if f[0] == 'M': return len(f) == 3 and (f[1] == '-' or KEY.fullmatch(f[1]) is not None) and HEX.fullmatch(f[2]) is not None
+    if f[0] == 'G': return len(f) == 3 and all(HEX.fullmatch(x) is not None for x in f[1:])   # main's mesh library pairs
     return False
 
 
