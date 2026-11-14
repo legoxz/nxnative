@@ -442,8 +442,8 @@ static Result nfp_mount(const NfpDeviceHandle *h, int model, int target) {
     g_nfp_state = NFP_STATE_MOUNTED; LOG("nfp: Mount %s → ok", g_nfp_file.id);
     return nfp_unlock(RES_OK);
 }
-HLE_FORCE_BIG("_ZN2nn3nfp5MountERKNS0_12DeviceHandleENS0_9ModelTypeENS0_11MountTargetE", "mount the virtual amiibo", Result, h_nfp_Mount, const NfpDeviceHandle *h, int model, int target) { return nfp_mount(h, model, target); }
-HLE_FORCE_BIG("_ZN2nn3nfp5MountERKNS0_12DeviceHandleENS0_9ModelTypeE", "mount the virtual amiibo (two arguments: all targets)", Result, h_nfp_Mount2, const NfpDeviceHandle *h, int model) { return nfp_mount(h, model, 3); }
+HLE_FORCE("_ZN2nn3nfp5MountERKNS0_12DeviceHandleENS0_9ModelTypeENS0_11MountTargetE", "mount the virtual amiibo", Result, h_nfp_Mount, const NfpDeviceHandle *h, int model, int target) { return nfp_mount(h, model, target); }
+HLE_FORCE("_ZN2nn3nfp5MountERKNS0_12DeviceHandleENS0_9ModelTypeE", "mount the virtual amiibo (two arguments: all targets)", Result, h_nfp_Mount2, const NfpDeviceHandle *h, int model) { return nfp_mount(h, model, 3); }
 HLE_FORCE("_ZN2nn3nfp19AttachActivateEventEPNS_2os15SystemEventTypeERKNS0_12DeviceHandleE", "tag placed event; signalled by the host after a scan", Result, h_nfp_AttachAct, void *ev, const NfpDeviceHandle *h) {
     if (nfp_bad(h)) return NFP_RES_DEVICE_NOT_FOUND;
     hle_bind_system_event(ev, 0); nfp_lock(); g_nfp_ev_act = ev; return nfp_unlock(RES_OK);
@@ -493,16 +493,16 @@ HLE_FORCE("_ZN2nn3nfp8FinalizeEv", "amiibo library finalize: the scanned tag is 
     if (g_nfp_loaded) amiibo_free(&g_nfp_file);
     g_nfp_loaded = 0; atomic_store(&g_nfp_lib, 0); nfp_unlock(0);
 }
-HLE_FORCE_BIG("_ZN2nn3nfp5FlushERKNS0_12DeviceHandleE", "flush tag: the host writes the amiibo file on each change; nothing to do", Result, h_nfp_Flush, const NfpDeviceHandle *h) {
+HLE_FORCE("_ZN2nn3nfp5FlushERKNS0_12DeviceHandleE", "flush tag: the host writes the amiibo file on each change; nothing to do", Result, h_nfp_Flush, const NfpDeviceHandle *h) {
     nfp_lock(); return nfp_unlock(nfp_need_mount(h));
 }
-HLE_FORCE_BIG("_ZN2nn3nfp19OpenApplicationAreaERKNS0_12DeviceHandleEj", "open the virtual amiibo's application area", Result, h_nfp_OpenArea, const NfpDeviceHandle *h, uint32_t id) {
+HLE_FORCE("_ZN2nn3nfp19OpenApplicationAreaERKNS0_12DeviceHandleEj", "open the virtual amiibo's application area", Result, h_nfp_OpenArea, const NfpDeviceHandle *h, uint32_t id) {
     nfp_lock(); Result r = nfp_need_mount(h); if (r) return nfp_unlock(r);
     if (!nfp_area(id)) r = NFP_RES_AREA_NULL; else { g_nfp_area_open = 1; g_nfp_area_id = id; }
     LOG("nfp: OpenApplicationArea %s area %#x → %#x", g_nfp_file.id, id, r);
     return nfp_unlock(r);
 }
-HLE_FORCE_BIG("_ZN2nn3nfp18GetApplicationAreaEPvPmRKNS0_12DeviceHandleEm", "read the open application area: at most the buffer size", Result, h_nfp_GetArea, void *buf, uint64_t *n, const NfpDeviceHandle *h, uint64_t sz) {
+HLE_FORCE("_ZN2nn3nfp18GetApplicationAreaEPvPmRKNS0_12DeviceHandleEm", "read the open application area: at most the buffer size", Result, h_nfp_GetArea, void *buf, uint64_t *n, const NfpDeviceHandle *h, uint64_t sz) {
     if (n) *n = 0;
     nfp_lock(); Result r = nfp_need_mount(h); if (r) return nfp_unlock(r);
     amiibo_area *a = g_nfp_area_open ? nfp_area(g_nfp_area_id) : NULL;
@@ -510,7 +510,7 @@ HLE_FORCE_BIG("_ZN2nn3nfp18GetApplicationAreaEPvPmRKNS0_12DeviceHandleEm", "read
     size_t k = a->size < sz ? a->size : (size_t)sz; memcpy(buf, a->data, k); if (n) *n = k;
     return nfp_unlock(RES_OK);
 }
-HLE_FORCE_BIG("_ZN2nn3nfp18SetApplicationAreaERKNS0_12DeviceHandleEPKvm", "write the open application area; saved to the amiibo file", Result, h_nfp_SetArea, const NfpDeviceHandle *h, const void *buf, uint64_t sz) {
+HLE_FORCE("_ZN2nn3nfp18SetApplicationAreaERKNS0_12DeviceHandleEPKvm", "write the open application area; saved to the amiibo file", Result, h_nfp_SetArea, const NfpDeviceHandle *h, const void *buf, uint64_t sz) {
     nfp_lock(); Result r = nfp_need_mount(h); if (r) return nfp_unlock(r);
     amiibo_area *a = g_nfp_area_open ? nfp_area(g_nfp_area_id) : NULL;
     if (sz > NFP_AREA_SIZE) r = NFP_RES_WRONG_ARGUMENT; else if (!a) r = NFP_RES_AREA_NULL; else { nfp_area_set(a, buf, (size_t)sz); amiibo_save(&g_nfp_file); }
@@ -530,8 +530,8 @@ static Result nfp_create_area(const NfpDeviceHandle *h, const NfpAreaCreateInfo 
     LOG("nfp: %sApplicationArea %s area %#x, %u bytes → %#x", recreate ? "Recreate" : "Create", g_nfp_file.id, ci->id, ci->size, r);
     return nfp_unlock(r);
 }
-HLE_FORCE_BIG("_ZN2nn3nfp21CreateApplicationAreaERKNS0_12DeviceHandleERKNS0_25ApplicationAreaCreateInfoE", "create an application area on the virtual amiibo", Result, h_nfp_CreateArea, const NfpDeviceHandle *h, const void *info) { return nfp_create_area(h, info, 0); }
-HLE_FORCE_BIG("_ZN2nn3nfp23RecreateApplicationAreaERKNS0_12DeviceHandleERKNS0_25ApplicationAreaCreateInfoE", "replace an application area on the virtual amiibo", Result, h_nfp_RecreateArea, const NfpDeviceHandle *h, const void *info) { return nfp_create_area(h, info, 1); }
+HLE_FORCE("_ZN2nn3nfp21CreateApplicationAreaERKNS0_12DeviceHandleERKNS0_25ApplicationAreaCreateInfoE", "create an application area on the virtual amiibo", Result, h_nfp_CreateArea, const NfpDeviceHandle *h, const void *info) { return nfp_create_area(h, info, 0); }
+HLE_FORCE("_ZN2nn3nfp23RecreateApplicationAreaERKNS0_12DeviceHandleERKNS0_25ApplicationAreaCreateInfoE", "replace an application area on the virtual amiibo", Result, h_nfp_RecreateArea, const NfpDeviceHandle *h, const void *info) { return nfp_create_area(h, info, 1); }
 // The amiibo settings applets are out of scope: no tag found
 HLE_FORCE("_ZN2nn3nfp13StartRestorerEPNS0_12DeviceHandleERKNS0_24AmiiboSettingsStartParamERKNS0_7TagInfoE", "amiibo restorer applet: no tag", Result, h_nfp_Restorer, NfpDeviceHandle *h, const void *p, const void *tag) { (void)h; (void)p; (void)tag; return NFP_RES_TAG_NOT_FOUND; }
 HLE_FORCE("_ZN2nn3nfp19StartGameDataEraserEPNS0_12DeviceHandleERKNS0_24AmiiboSettingsStartParamERKNS0_7TagInfoE", "amiibo game data eraser applet: no tag", Result, h_nfp_Eraser, NfpDeviceHandle *h, const void *p, const void *tag) { (void)h; (void)p; (void)tag; return NFP_RES_TAG_NOT_FOUND; }
