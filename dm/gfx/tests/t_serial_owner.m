@@ -137,12 +137,12 @@ static void check_pressure_trim(void) {
     pthread_mutex_lock(&g_smu);
     n = own_alias_trim_locked(trim_now, 4096, parent.allocatedSize, &estimated);
     CHECK(n == 0 && own_alias_get_locked(&parent_key) == parent, "a serial-held texture view keeps its shared parent from trimming");
-    own_alias_orphan_stats orphan = own_alias_orphans_locked();
+    own_alias_unheld orphan = own_alias_unheld_locked();
     CHECK(orphan.entries == 0 && orphan.bytes == 0, "memory stats do not count a serial-held view's parent as orphaned");
     pthread_mutex_unlock(&g_smu);
     serial_del(view_serial);
     pthread_mutex_lock(&g_smu);
-    orphan = own_alias_orphans_locked();
+    orphan = own_alias_unheld_locked();
     CHECK(orphan.entries == 1 && orphan.bytes == parent.allocatedSize, "memory stats count the parent after its view serial is released");
     n = own_alias_trim_locked(trim_now, 4096, parent.allocatedSize, &estimated);
     CHECK(n == 1 && !own_alias_get_locked(&parent_key), "the parent becomes trimmable once its view serial is released");
