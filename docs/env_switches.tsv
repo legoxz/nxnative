@@ -234,6 +234,7 @@ DM_NVN_RT_RECYCLE	switch	`0` makes each render target in a GPU-only pool, each f
 DM_NVN_RUNTIME_COMPILER	path	Mac development runs: `dmsh_live.py` from the same checkout as the host. Compiles missing NVN1 vertex and pixel stages with the packer's toolchain and caches them under `DM_TEMP/nvn-shaders`.
 DM_NVN_RUNTIME_PYTHON	path	Mac development runs: the Python executable that runs `DM_NVN_RUNTIME_COMPILER`.
 DM_NVN_RUNTIME_SOURCE	switch	`1` makes the shader compiler emit Metal source for the host to compile with the Metal API. The Mac app launcher sets this when the compiler is bundled.
+DM_NVN_SEEN_KEEP	switch	`=<frames>` (600 by default): while the marked textures come to more than a quarter of Metal's working set, a texture ID's read mark goes with its next texture when no shader has read the ID for that many frames, so the walk makes that texture under its budget and holds the stand-in until it is read; `0` keeps every mark until its ID is emptied, as before
 DM_NVN_SHDUMP	diagnostic	`=<dir>` saves programs missing from the shader map as `<key>.ctl` (control section) and `<key>.code`, to find the files that hold them
 DM_NVN_SHMAP	path	The shader map (`shader_map.tsv`); `c1_full.tsv` and `pso_manifest.tsv` are taken from the same folder. Default: the game profile's folder on the Mac; the iOS app sets it
 DM_NVN_SHOT	diagnostic	`=<frame>[,<frame>…]:<path>` saves the swapchain texture as an image at those frames (`%d` in the path = frame number); a window the game crops is saved as presented (the crop drawn at the texture's own size)
