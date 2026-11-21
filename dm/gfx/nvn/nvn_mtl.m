@@ -4805,6 +4805,7 @@ static void gws_set(uintptr_t lo, uintptr_t hi) {   // [lo, hi) becomes one span
     atomic_store(&g_gws_new, 1);
 }
 void mtl_tex_gpu_written(const tex_t *t) {
+    if (t && t->pool) { alias_key k = tex_alias_key(t); own_alias_mark_gpu_written(&k); }
     if (!t || !t->mem || !t->L.size || !t->pool || (t->pool->flags & (NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS | NVN_MEMORY_POOL_FLAGS_VIRTUAL))) {
         return;
     }
@@ -5544,6 +5545,17 @@ static _Atomic uint64_t g_gptr_bindings, g_gptr_reads, g_gptr_added, g_gptr_byte
 void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
     static unsigned long long last_rss, last_gpu, last_frame; static int lines; unsigned long long gpu = (unsigned long long)(g_dev.currentAllocatedSize >> 20);
     unsigned long long dr = rss_mb > last_rss ? rss_mb - last_rss : last_rss - rss_mb, dg = gpu > last_gpu ? gpu - last_gpu : last_gpu - gpu;
+#if TARGET_OS_OSX
+    // macOS has no os_proc_available_memory(). When the process reaches 75% of physical RAM, retire old cache-only read textures until its footprint is back below 65%.
+    static uint64_t physical_mb; if (!physical_mb) { uint64_t b = 0; size_t z = sizeof b; if (!sysctlbyname("hw.memsize", &b, &z, NULL, 0)) physical_mb = b >> 20; }
+    if (physical_mb && rss_mb > physical_mb * 3 / 4) {
+        uint64_t target_mb = physical_mb * 13 / 20, retired_bytes = 0, need = (rss_mb - target_mb) << 20;
+        pthread_mutex_lock(&g_smu);
+        uint32_t ntrim = own_alias_trim_locked(own_hook_submission(), 4096, need, &retired_bytes);
+        pthread_mutex_unlock(&g_smu);
+        if (ntrim) MLOG("memory pressure: retired %u idle cache-only read textures (~%llu MB estimated); footprint %llu MB, target %llu MB", ntrim, (unsigned long long)(retired_bytes >> 20), rss_mb, (unsigned long long)target_mb);
+    }
+#endif
     if (lines >= 400 || (lines && dr < 64 && dg < 64 && frame - last_frame < 3000)) return; lines++; last_rss = rss_mb; last_gpu = gpu; last_frame = frame;
     pthread_mutex_lock(&g_deferred_mu); unsigned long nd = (unsigned long)g_deferred.count; pthread_mutex_unlock(&g_deferred_mu);
     pthread_mutex_lock(&g_res_mu); unsigned long nr = (unsigned long)g_res_objects.count; pthread_mutex_unlock(&g_res_mu);

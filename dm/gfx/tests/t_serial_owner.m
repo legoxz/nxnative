@@ -59,6 +59,96 @@ static alias_key akey(uint64_t pool, int64_t off, NVNformat f) {
     alias_key k; memset(&k, 0, sizeof k); k.pool = pool; k.off = off;
     k.d = (nvn_texdesc){.target = NVN_TEXTURE_TARGET_2D, .format = f, .width = 4, .height = 4, .depth = 1, .levels = 1, .samples = 1}; return k;
 }
+@interface TrimTexture : NSObject
+@property (nonatomic) MTLTextureUsage usage;
+@property (nonatomic) uint64_t allocatedSize;
+@property (nonatomic, strong) id<MTLTexture> parentTexture;
+@end
+@implementation TrimTexture
+@end
+static id<MTLTexture> cache_texture(MTLTextureUsage usage) {
+    TrimTexture *t = [TrimTexture new]; t.usage = usage; t.allocatedSize = 16384; return (id<MTLTexture>)t;
+}
+static void check_pressure_trim(void) {
+    alias_key old = akey(0x6100, 0, NVN_FORMAT_RGBA8), recent = akey(0x6200, 0, NVN_FORMAT_RGBA8);
+    alias_key target = akey(0x6300, 0, NVN_FORMAT_RGBA8), dirty = akey(0x6400, 0, NVN_FORMAT_RGBA8);
+    alias_key held_key = akey(0x6500, 0, NVN_FORMAT_RGBA8), pinned_key = akey(0x6600, 0, NVN_FORMAT_RGBA8);
+    alias_key twin_a = akey(0x6700, 0, NVN_FORMAT_RGBA8), twin_b = akey(0x6700, 0x10000, NVN_FORMAT_RGBA8);
+    id<MTLTexture> to = cache_texture(MTLTextureUsageShaderRead);
+    id<MTLTexture> tr = cache_texture(MTLTextureUsageShaderRead);
+    id<MTLTexture> tt = cache_texture(MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget);
+    id<MTLTexture> td = cache_texture(MTLTextureUsageShaderRead);
+    id<MTLTexture> th = cache_texture(MTLTextureUsageShaderRead), tp = cache_texture(MTLTextureUsageShaderRead);
+    id<MTLTexture> twins = cache_texture(MTLTextureUsageShaderRead);
+    uint64_t bytes = to.allocatedSize;
+    uint64_t trim_now = g_sub + 10000;
+    pthread_mutex_lock(&g_smu);
+    own_alias_put_locked(&old, to, 1); own_alias_put_locked(&recent, tr, trim_now - 1000);
+    own_alias_put_locked(&target, tt, 1); own_alias_put_locked(&dirty, td, 1);
+    own_alias_put_locked(&held_key, th, 1); own_alias_put_locked(&pinned_key, tp, 1);
+    own_alias_put_locked(&twin_a, twins, 2); own_alias_put_locked(&twin_b, twins, 2);
+    pthread_mutex_unlock(&g_smu);
+    tex_put((1ull << 62) + 65001, th); tex_put((1ull << 62) + 66001, tp); mtl_tex_pin((1ull << 62) + 66001);
+    own_alias_mark_gpu_written(&dirty);
+    uint64_t estimated = 0;
+    pthread_mutex_lock(&g_smu);
+    uint32_t n = own_alias_trim_locked(trim_now, 4096, bytes, &estimated);
+    CHECK(n == 1 && estimated == bytes && own_alias_get_locked(&old) == nil, "an old read-only cache texture is retired to relieve pressure");
+    CHECK(own_alias_get_locked(&recent) && own_alias_get_locked(&target) && own_alias_get_locked(&dirty) && own_alias_get_locked(&held_key) && own_alias_get_locked(&pinned_key),
+          "recent, render-target, GPU-written, serial-held and pinned textures stay cached");
+    CHECK(own_alias_get_locked(&twin_a) && own_alias_get_locked(&twin_b), "a shared Metal texture is not half-evicted");
+    CHECK(own_check_locked((char[256]){0}, 256), "pressure trimming preserves owner table invariants");
+    pthread_mutex_unlock(&g_smu);
+    serial_del((1ull << 62) + 65001); mtl_tex_unpin((1ull << 62) + 66001);
+    pthread_mutex_lock(&g_smu);
+    own_alias_del_locked(&held_key); own_alias_del_locked(&pinned_key);
+    n = own_alias_trim_locked(trim_now, 4096, twins.allocatedSize, &estimated);
+    CHECK(n == 1 && estimated == twins.allocatedSize && !own_alias_get_locked(&twin_a) && !own_alias_get_locked(&twin_b), "all aliases of one eligible texture retire together and count its size once");
+    own_alias_del_locked(&recent); own_alias_del_locked(&target); own_alias_del_locked(&dirty);
+    pthread_mutex_unlock(&g_smu);
+
+    // A GPU write through another NVN view can overlap a cache-only read texture.
+    // The read texture must not be retired if it would later be rebuilt from stale pool bytes.
+    alias_key overlap_read = akey(0x6900, 0, NVN_FORMAT_RGBA8), overlap_write = akey(0x6900, 16, NVN_FORMAT_RGBA8);
+    alias_key unrelated_key = akey(0x6901, 0, NVN_FORMAT_RGBA8);
+    id<MTLTexture> read_texture = cache_texture(MTLTextureUsageShaderRead);
+    id<MTLTexture> write_texture = cache_texture(MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget);
+    id<MTLTexture> unrelated = cache_texture(MTLTextureUsageShaderRead);
+    pthread_mutex_lock(&g_smu);
+    own_alias_put_locked(&overlap_read, read_texture, 1); own_alias_put_locked(&overlap_write, write_texture, 1); own_alias_put_locked(&unrelated_key, unrelated, 1);
+    pthread_mutex_unlock(&g_smu);
+    own_alias_mark_gpu_written(&overlap_write);
+    pthread_mutex_lock(&g_smu);
+    n = own_alias_trim_locked(trim_now, 4096, unrelated.allocatedSize, &estimated);
+    CHECK(n == 1 && estimated == unrelated.allocatedSize && own_alias_get_locked(&overlap_read) == read_texture &&
+          own_alias_get_locked(&overlap_write) == write_texture && !own_alias_get_locked(&unrelated_key),
+          "a GPU write protects overlapping read aliases but still trims unrelated cache entries");
+    own_alias_del_locked(&overlap_read); own_alias_del_locked(&overlap_write);
+    pthread_mutex_unlock(&g_smu);
+
+    // A live serial can hold a Metal view whose parent is the shared cache texture. The owner's held-count
+    // table tracks that parent even though the serial table contains the view object itself.
+    alias_key parent_key = akey(0x6800, 0, NVN_FORMAT_RGBA8);
+    id<MTLTexture> parent = cache_texture(MTLTextureUsageShaderRead);
+    TrimTexture *view = [TrimTexture new]; view.usage = MTLTextureUsageShaderRead; view.allocatedSize = parent.allocatedSize; view.parentTexture = parent;
+    uint64_t view_serial = (1ull << 62) + 68001;
+    pthread_mutex_lock(&g_smu); own_alias_put_locked(&parent_key, parent, 1); pthread_mutex_unlock(&g_smu);
+    tex_put(view_serial, (id)view);
+    pthread_mutex_lock(&g_smu);
+    n = own_alias_trim_locked(trim_now, 4096, parent.allocatedSize, &estimated);
+    CHECK(n == 0 && own_alias_get_locked(&parent_key) == parent, "a serial-held texture view keeps its shared parent from trimming");
+    own_alias_orphan_stats orphan = own_alias_orphans_locked();
+    CHECK(orphan.entries == 0 && orphan.bytes == 0, "memory stats do not count a serial-held view's parent as orphaned");
+    pthread_mutex_unlock(&g_smu);
+    serial_del(view_serial);
+    pthread_mutex_lock(&g_smu);
+    orphan = own_alias_orphans_locked();
+    CHECK(orphan.entries == 1 && orphan.bytes == parent.allocatedSize, "memory stats count the parent after its view serial is released");
+    n = own_alias_trim_locked(trim_now, 4096, parent.allocatedSize, &estimated);
+    CHECK(n == 1 && !own_alias_get_locked(&parent_key), "the parent becomes trimmable once its view serial is released");
+    pthread_mutex_unlock(&g_smu);
+    step("pressure trim");
+}
 static NSMapTable *g_keys;   // object → the key share() put it under (each object its own 64 KB cell of pool 0x5000)
 static alias_key key_of(id o) {
     NSNumber *n = [g_keys objectForKey:o]; if (!n) { n = @(g_keys.count); [g_keys setObject:n forKey:o]; }
@@ -73,6 +163,11 @@ int main(void) { @autoreleasepool {
     g_dropped = [NSMutableArray array]; g_dropped_keep = [NSMutableArray array];
     g_keys = [NSMapTable mapTableWithKeyOptions:NSPointerFunctionsObjectPointerPersonality valueOptions:NSPointerFunctionsStrongMemory];
     step("start");
+    if (getenv("DM_TEST_ALIAS_TRIM_ONLY")) {
+        check_pressure_trim();
+        printf("serial owner pressure trim: %d checks, %d failed\n", checks, failed);
+        return failed != 0;
+    }
 
     {   // a live serial: registration, lookup, replacement, removal
         uint64_t k = 93001; id a = [NSObject new], b = [NSObject new];

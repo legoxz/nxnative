@@ -149,6 +149,7 @@ static void ghost_held_add(const void *o, int d) { count_add(&g_ghost_held, o, d
 // (own_hook_drop keeping it resident), never removing them from the residency set. Entries go when their pool is finalized (own_pool_finalize_locked) or another texture takes over
 // their storage (alias_take_over). Under g_smu
 static nvn_hmap g_alias = {.klen = sizeof(alias_key)};
+static nvn_hmap g_alias_dirty = {.klen = sizeof(alias_key)};  // storage whose texture may contain GPU-written bytes; do not rebuild it from the pool
 // The shared textures by where their storage lies, for alias_take_over and the image families' owner lookup (own_alias_at_locked): {pool, 64 KB cell of the pool} → the entries whose
 // bytes reach into that cell, each with its end. It walked g_alias's whole capacity for every texture made instead: Mario Golf: Super Rush's All-Star Summit registers 134,400 textures
 // and makes about 90,000 of them as the course loads, each walk 131,072 slots with a layout and a lookup per entry of the pool, and the load had not finished after 12 minutes on one
@@ -187,7 +188,7 @@ static void alias_seen(const alias_key *k, uint64_t now) { nvn_hm_put(&g_alias_s
 static int alias_del(const alias_key *k) {
     void *old = nvn_hm_del(&g_alias, k);
     if (!old) return 0;
-    alias_index(k, 0); nvn_hm_del(&g_alias_seen, k);
+    alias_index(k, 0); nvn_hm_del(&g_alias_seen, k); nvn_hm_del(&g_alias_dirty, k);
     id o = CFBridgingRelease(old);
     if (g_alias_set) CFSetRemoveValue(g_alias_set, (__bridge const void *)o);
     gone_note((__bridge const void *)o);
@@ -203,6 +204,24 @@ id own_alias_get_locked(const alias_key *k) { return hm_get_id(&g_alias, k); }
 id own_alias_peek(const alias_key *k) { pthread_mutex_lock(&g_smu); id o = hm_get_id(&g_alias, k); pthread_mutex_unlock(&g_smu); return o; }
 void own_alias_put_locked(const alias_key *k, id o, uint64_t seen) { alias_put(k, o, seen); }
 int own_alias_del_locked(const alias_key *k) { return alias_del(k); }
+void own_alias_mark_gpu_written(const alias_key *k) {
+    if (!k || !k->pool) return;
+    nvn_texlayout L; nvn_tex_layout(&k->d, &L);
+    if (!L.size) return;
+    int64_t lo = k->off, hi = lo + (int64_t)L.size;
+    pthread_mutex_lock(&g_smu);
+    // A different NVN description can overlap these bytes. Mark every shared alias
+    // whose cached Metal contents a later lookup could otherwise rebuild from stale pool data.
+    for (int64_t c = lo >> ALIAS_CELL; c <= (hi - 1) >> ALIAS_CELL; c++) {
+        uint64_t ck[2] = {k->pool, (uint64_t)c}; const alias_cell *v = nvn_hm_get(&g_alias_cells, ck);
+        for (uint32_t i = 0; v && i < v->n; i++) {
+            const alias_key *a = &v->e[i].k;
+            if (c != MAX(lo >> ALIAS_CELL, a->off >> ALIAS_CELL) || a->off >= hi || v->e[i].end <= lo || !nvn_hm_get(&g_alias, a)) continue;
+            nvn_hm_put(&g_alias_dirty, a, (void *)(uintptr_t)1);
+        }
+    }
+    pthread_mutex_unlock(&g_smu);
+}
 // A new shared texture takes over storage: entries of the same pool whose storage overlaps the new texture's under another description go, unless a live texture object still resolves
 // to them (an object rebuilt over the same storage with the same description must keep finding it: SMBW's transient render targets) or a lookup found them in the last ALIAS_IDLE submissions
 // (Breath of the Wild finalizes its transient render targets before it submits and makes them again the next frame: targets sharing storage would evict each other every frame). On NVN
@@ -603,6 +622,49 @@ own_alias_unheld own_alias_unheld_locked(void) {
         if ([o respondsToSelector:@selector(usage)] && (((id<MTLTexture>)o).usage & (MTLTextureUsageRenderTarget | MTLTextureUsageShaderWrite))) s.writable_bytes += b;
     }
     CFRelease(sized); return s;
+}
+typedef struct { alias_key key; uint64_t seen, bytes; } alias_trim_candidate;
+static int alias_trim_cmp(const void *a, const void *b) {
+    const alias_trim_candidate *x = a, *y = b;
+    return x->seen < y->seen ? -1 : x->seen > y->seen ? 1 : 0;
+}
+uint32_t own_alias_trim_locked(uint64_t now, uint64_t idle_submissions, uint64_t need_bytes, uint64_t *estimated_bytes) {
+    if (estimated_bytes) *estimated_bytes = 0;
+    if (!need_bytes || !g_alias.n) return 0;
+    CFMutableSetRef selected = CFSetCreateMutable(NULL, 0, NULL), blocked = CFSetCreateMutable(NULL, 0, NULL);
+    alias_trim_candidate *v = malloc((size_t)g_alias.n * sizeof *v); if (!v) { CFRelease(blocked); CFRelease(selected); return 0; }
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < g_alias.cap; i++) {
+        if (!g_alias.vals[i]) continue;
+        id<MTLTexture> t = (__bridge id<MTLTexture>)g_alias.vals[i];
+        alias_key k; memcpy(&k, g_alias.keys + (size_t)i * g_alias.klen, sizeof k);
+        // entry_holds includes serials and pins that name a view of t: count_add tracks the view's parents too.
+        if (entry_holds((__bridge void *)t) || tex_object_pinned(t) || (t.usage & (MTLTextureUsageRenderTarget | MTLTextureUsageShaderWrite)) || nvn_hm_get(&g_alias_dirty, &k)) {
+            CFSetAddValue(blocked, g_alias.vals[i]);
+            continue;
+        }
+        uint64_t seen = (uint64_t)(uintptr_t)nvn_hm_get(&g_alias_seen, &k);
+        if (!seen || now <= seen || now - seen < idle_submissions) { CFSetAddValue(blocked, g_alias.vals[i]); continue; }
+        if (CFSetContainsValue(selected, g_alias.vals[i])) continue;
+        CFSetAddValue(selected, g_alias.vals[i]);
+        v[n++] = (alias_trim_candidate){.key = k, .seen = seen, .bytes = t.allocatedSize};
+    }
+    CFRelease(selected);
+    qsort(v, n, sizeof *v, alias_trim_cmp);
+    uint32_t dropped = 0; uint64_t bytes = 0;
+    for (uint32_t i = 0; i < n && bytes < need_bytes; i++) {
+        id object = hm_get_id(&g_alias, &v[i].key);
+        if (!object || CFSetContainsValue(blocked, (__bridge const void *)object)) continue;
+        alias_key *keys = malloc((size_t)g_alias.n * sizeof *keys); uint32_t nk = 0;
+        if (!keys) continue;
+        for (uint32_t j = 0; j < g_alias.cap; j++) if (g_alias.vals[j] == (__bridge void *)object) {
+            memcpy(&keys[nk++], g_alias.keys + (size_t)j * g_alias.klen, sizeof keys[0]);
+        }
+        uint32_t removed = 0; for (uint32_t j = 0; j < nk; j++) removed += alias_del(&keys[j]);
+        free(keys);
+        if (removed) { dropped++; bytes += v[i].bytes; }
+    }
+    CFRelease(blocked); free(v); if (estimated_bytes) *estimated_bytes = bytes; return dropped;
 }
 own_stats own_stats_locked(void) { return (own_stats){.live = g_by_serial.n, .live_cap = g_by_serial.cap, .ghost = g_ghost.n, .retire_wait = g_retire_wait.n, .ghost_puts = g_ghost_puts}; }
 void own_each_locked(void (^fn)(uint64_t serial, id o, int ghost)) {

@@ -117,6 +117,8 @@ own_alias_stats own_alias_stats_locked(void);
 // longest any of them has gone without a lookup, in submissions (issue #2629: how much of a long session's memory growth they are). A walk: the memory report
 typedef struct { uint32_t entries; uint64_t bytes, writable_bytes, oldest_idle; } own_alias_unheld;
 own_alias_unheld own_alias_unheld_locked(void);
+void own_alias_mark_gpu_written(const alias_key *k);           // a recorded GPU write makes a cache entry unsafe to reconstruct from its pool
+uint32_t own_alias_trim_locked(uint64_t now, uint64_t idle_submissions, uint64_t need_bytes, uint64_t *estimated_bytes); // pressure trim; caller holds g_smu
 
 // Retirement eligibility (see above). Caller holds g_smu
 int own_retire_locked(id o);    // a retired resource whose fence has passed: 1, it may leave the residency set; 0, an entry holds it: the owner keeps it (the caller drops only its reference)
