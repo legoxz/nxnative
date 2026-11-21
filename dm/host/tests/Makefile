@@ -329,6 +329,8 @@ $(B)/t_hid_tsan: t_hid.c ../hle_hid.c ../motion_fusion.h ../hle_haptics.c ../hle
 run: $(B)/t_front_role
 $(B)/t_front_role: t_front_role.c ../front_role.h | $(B)
 	$(CLANG) -O1 -g -Wall -Werror -I.. -o $@ t_front_role.c
+$(B)/t_nfp: t_nfp.c ../hle_nfp.c ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) | $(B)
+	$(CLANG) -O1 -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_nfp.c ../hle_bigstack.c
 $(B)/t_haptics: t_haptics.c ../hle_haptics.c ../hle_haptics.h ../dm_input.h | $(B)
 	$(CLANG) -O1 -g -Wall -Werror -I.. -o $@ t_haptics.c ../hle_haptics.c
 $(B)/t_haptics_apple: t_haptics_apple.m ../haptics_apple.m ../haptics_apple.h ../hle_haptics.c ../hle_haptics.h | $(B)
