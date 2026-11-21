@@ -240,6 +240,13 @@ void main() { gl_Position = position + value + palette[index] + lighting(); }
             self.assertIsInstance(r, tuple, r)
             self.assertIn('t:tex=0:1:sampler2D', r[1])
 
+    def test_es300_source_translates(self):   # Blizzard Arcade Collection: both shaders in its main failed with `ES shaders for SPIR-V require version 310 or higher`
+        src = b'#version 300 es\nprecision highp float;\nuniform sampler2D tex;\nin vec2 texcoord;\nout vec4 frag_color;\nvoid main() { frag_color = texture(tex, texcoord); }\n'
+        with tempfile.TemporaryDirectory() as tmp:
+            r = gl_shaders.translate(src, 'frag', 'd' * 16, tmp)
+            self.assertIsInstance(r, tuple, r)
+            self.assertIn('t:tex=0:1:sampler2D', r[1])
+
     def test_resource_names_do_not_collide_with_generated_names(self):
         src = (b'#version 320 es\nprecision highp float;\nuniform sampler2D dm_gl_resource_21;\nuniform sampler2D dm_gl_resource_21Smplr;\n'
                b'out vec4 c;\nvoid main() { c = texture(dm_gl_resource_21, vec2(0.5)) + texture(dm_gl_resource_21Smplr, vec2(0.5)); }\n')

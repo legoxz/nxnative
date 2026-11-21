@@ -338,6 +338,7 @@ def translate(src, stage, key, tmp):
     legacy = not v or v.group(1) == '100' or desktop_legacy
     if legacy:
         src = promote_legacy(t.replace(v.group(0), '', 1) if v else t, stage, renamed, desktop=desktop_legacy).encode('latin1')
+    elif v.group(1) == '300': src = t.replace(v.group(0), '#version 310 es\n', 1).encode('latin1')   # GLSL ES 3.00 source is valid ES 3.10, the oldest ES version SPIR-V takes
     g = os.path.join(tmp, f'{key}.{stage}'); spv = g + '.spv'; msl = os.path.join(tmp, f'{key}_{stage[0]}.metal')
     open(g + '.in', 'wb').write(src)
     r = subprocess.run(['glslangValidator', '-E', '-S', stage, g + '.in'], capture_output=True, text=True)
