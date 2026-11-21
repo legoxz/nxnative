@@ -135,6 +135,12 @@ int main(void) { @autoreleasepool {
         settle();
         CHECK(waiting() == 1, "its heap waits once the snapshot is freed");
     }
+    {   // critical memory pressure (the dispatch source mtl_init makes sets g_rh_pressure): a heap that just started waiting is freed at the next submission too
+        uint64_t trimmed = g_rh_trimmed; atomic_store(&g_rh_pressure, 1);
+        mtl_sub_commit(); mtl_drain(); mtl_sub_begin();   // rh_trim
+        CHECK(waiting() == 0 && g_rh_bytes == 0 && g_rh_trimmed == trimmed + 1, "under critical memory pressure every waiting heap is freed at the next submission");
+        CHECK(atomic_load(&g_rh_pressure) == 0, "and the pressure mark is taken once");
+    }
     {   // a pool finalized before its texture object (Ocarina of Time's shadow target: the pool at the load into the field, the object only after the target is made again at the
         // load back): the texture leaves with the pool, as its memory does on NVN, and its heap waits for the next target; the object's own finalize later finds nothing to free
         unsigned w0 = waiting(); __weak id<MTLTexture> wt; __weak id<MTLHeap> wh;
