@@ -1079,3 +1079,10 @@ Frame pacing: the host's frame step, engine frame limiters, present intervals an
 - **Measured:** M1 iPad Pro (Ocarina of Time, Deku Tree, 30 fps cap, Dynamic resolution on, 9,000 frames of camera turns): 66.7 ms gaps cut from 22.8 → 0.2 per 300 frames, on-screen p99 66.7 → 50.0 ms (27.9 → 27.7 fps, game time 1.000). iPhone 17 (Kokiri Forest, thermal state 1): ~30/300 → 1/2,096 gaps over 50 ms, p99 45.8–50.0 ms ([PR #1971](https://github.com/seedds/nxnative/pull/1971)). Open: the power cost of 60 callbacks a second while `fine` is active is not measured.
 - **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md#found-on-this-game).
 
+### A failed GPU event holds a completed fence wait
+
+- **Symptom:** rendering freezes after GPU command errors, with the main thread in `IOSurfaceSharedEvent waitUntilSignaledValue:timeoutMS:` although commit feedback has completed its fence.
+- **Cause:** the fast fence wait could block for one hour on a GPU event. A rejected command buffer completed through its feedback handler, but the queue's event remained at zero, so that wait could not see the published completion.
+- **Fix:** the fast event wait is bounded to 100 ms before rechecking completion and using the feedback condition variable. Finite waits retain their original total timeout budget.
+- **Found on:** Ocarina of Time (Switch 2, #1299), after a gameplay GPU memory fault. The GPU fault itself remains open.
+- **Check:** `make -C dm/gfx/tests GAME=0400C3F00006E000 perf-order-cpu` checks a completion callback with an unsignaled event, finite timeout budgets, and both fast-wait and feedback paths.
