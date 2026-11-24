@@ -24,6 +24,7 @@ assert spec is not None and spec.loader is not None
 patch = importlib.util.module_from_spec(spec); spec.loader.exec_module(patch)
 OTHERS = patch.MATCH_FRAME_STEP['main'][0]['others']
 FUNCTIONS = {name: 0x100000 + i * 0x10000 for i, name in enumerate(OTHERS)}
+OUTPUT_SITES = {FUNCTIONS['output size init'] + 0xf4, FUNCTIONS['output size'] + 0x300, FUNCTIONS['window size'] + 0x3fc, FUNCTIONS['app graphics init'] + 0x88}   # the 3840x2160 output, placed with the level stub
 
 
 def record_hooks(others):
@@ -44,12 +45,12 @@ class Placement(unittest.TestCase):
         self.assertEqual(OTHERS['movie draw']['size'], 0x158)
         sites, capabilities = record_hooks(FUNCTIONS)
         self.assertEqual(sites[FUNCTIONS['movie draw'] + 0x64], '69a241a9')
-        self.assertEqual(len(sites), 23)   # frame step, DRS, two render-scale hooks, and 19 aspect hooks
+        self.assertEqual(len(sites), 27)   # frame step, DRS, four output-size hooks, two render-scale hooks, and 19 aspect hooks
         self.assertEqual(capabilities, {'DYNAMIC_RESOLUTION', 'FRAME_STEP_120', 'SCREEN_ASPECT'})
 
     def test_any_missing_aspect_match_leaves_all_aspect_hooks_out(self):
         render_scale = FUNCTIONS['render scale']
-        other_sites = {0xe4, FUNCTIONS['dynamic resolution'], render_scale + 0xce4, render_scale + 0xd48}
+        other_sites = {0xe4, FUNCTIONS['dynamic resolution'], render_scale + 0xce4, render_scale + 0xd48} | OUTPUT_SITES
         for name in patch.screen_shape_functions:
             with self.subTest(name=name):
                 sites, capabilities = record_hooks(FUNCTIONS | {name: None})
@@ -61,7 +62,7 @@ class Placement(unittest.TestCase):
         for name in ('dynamic resolution', 'dynamic resolution update'):
             with self.subTest(name=name):
                 without_drs, capabilities = record_hooks(FUNCTIONS | {name: None})
-                self.assertEqual(set(without_drs), set(sites) - {FUNCTIONS['dynamic resolution']})
+                self.assertEqual(set(without_drs), set(sites) - {FUNCTIONS['dynamic resolution']} - OUTPUT_SITES)
                 self.assertEqual(capabilities, {'FRAME_STEP_120', 'SCREEN_ASPECT'})
 
 

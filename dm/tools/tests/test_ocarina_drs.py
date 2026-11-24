@@ -26,8 +26,8 @@ spec.loader.exec_module(patch)
 
 class OcarinaDrsStub(unittest.TestCase):
     def test_off_entry_prefix(self):
-        # First 4 words are the off-check returning 0 (ldr w17,[x16,#0x40]; cbnz w17,+0x10; mov w0,wzr; ret).
-        self.assertEqual(patch.drs_controller[:4], (0xb9404211, 0x35000071, 0x2a1f03e0, 0xd65f03c0))
+        # First 4 words are the off-check (ldr w17,[x16,#0x40]; cbnz w17,+0x10; b the off block, the last drs_off_len words; ret).
+        self.assertEqual(patch.drs_controller[:4], (0xb9404211, 0x35000071, 0x14000000 | (len(patch.drs_controller) - patch.drs_off_len - 2), 0xd65f03c0))
 
     def test_guard_omitted_without_render_scale_match(self):
         pos, words = [0x6000000], []
@@ -41,7 +41,7 @@ class OcarinaDrsStub(unittest.TestCase):
         )
         patch.dynamic_resolution(ctx)
         patch.render_scale(ctx)
-        self.assertEqual(ctx.render_scale, 0)
+        self.assertEqual(ctx.render_scale, 2)   # the level stub's off block takes scales above 1.0 without the view-size stubs
         self.assertEqual(tuple(words[1:]), patch.drs_controller)
 
     @unittest.skipUnless(platform.system() == 'Darwin' and platform.machine() == 'arm64' and shutil.which('clang'), 'needs macOS arm64 and clang')
@@ -136,12 +136,25 @@ static void init_ctrl(uint8_t *ctrl, float load, float thresh, int level, int co
     set_f32(ctrl, 0x10, thresh);
     set_u32(ctrl, 0x174, (uint32_t)level);
     set_u32(ctrl, 0x1a0, (uint32_t)count);
+    uint64_t end = (uint64_t)(uintptr_t)(ctrl + 0x190); memcpy(ctrl + 0x198, &end, 8);   // the scale list: empty
 }
 
 static void init_state(uint8_t *state, float target_fps, uint32_t enabled) {
     memset(state, 0, 0x400);
     set_f32(state, 0x00, target_fps);
     set_u32(state, 0x40, enabled);
+}
+
+// The off block's answer for one render scale: the scale list's first entry after `calls` calls with dynamic resolution off
+static float off_entry(uint8_t *ctrl, uint8_t *state, float scale, int guarded, int calls) {
+    static float node[4];
+    init_ctrl(ctrl, 200.0f, 83.0f, 5, 10);
+    init_state(state, 60.0f, 0);
+    set_f32(state, 0x10, scale);
+    node[0] = 0.75f;   // level 0's scale, at [first - 8]
+    uint64_t first = (uint64_t)(uintptr_t)&node[2]; memcpy(ctrl + 0x198, &first, 8);
+    for (int i = 0; i < calls; i++) assert((guarded ? call_drs_guarded : call_drs)(ctrl, state) == 0);
+    return node[0];
 }
 
 static uint64_t pack_ret(float scale, uint8_t status) {
@@ -261,6 +274,17 @@ int main(void) {
     assert(call_rs_status(pack_ret(0.75f, 2), state, view, &nzcv, r16) == 0);
     assert(call_rs_store(0.75f, state, view, &nzcv, r16, q30) == 0.5625f);
     assert(call_rs_status(pack_ret(0.75f, 2), state, view, &nzcv, r16) == 2);
+
+    // 7. Off block: with dynamic resolution off, level 0's scale is the game's own x the render scale, at most 1.0; above 1.333 it is 1.5 x 0.75 x the scale.
+    assert(off_entry(ctrl, state, 1.0f, 0, 3) == 0.75f && get_f32(state, 0x2a0) == 0.75f);
+    assert(off_entry(ctrl, state, 1.25f, 0, 3) == 0.9375f);   // not compounded over calls
+    assert(off_entry(ctrl, state, 4.0f / 3.0f, 0, 1) == 1.0f);
+    assert(off_entry(ctrl, state, 1.5f, 0, 1) == 1.6875f);
+    assert(off_entry(ctrl, state, 2.0f, 0, 1) == 2.25f);
+    assert(off_entry(ctrl, state, 0.0f, 0, 1) == 0.75f && off_entry(ctrl, state, NAN, 0, 1) == 0.75f);
+    // Behind the guard a scale below 1.0 leaves the entry to the view-size stubs; 1.0 or more reaches the off block.
+    assert(off_entry(ctrl, state, 0.75f, 1, 2) == 0.75f && get_f32(state, 0x2a0) == 0.0f);
+    assert(off_entry(ctrl, state, 1.25f, 1, 2) == 0.9375f);
 
     puts("ok");
     return 0;
