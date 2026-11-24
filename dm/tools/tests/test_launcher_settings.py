@@ -91,6 +91,13 @@ class LauncherSettingsTests(unittest.TestCase):
                     s = build(BOTW, 'nvn', platform)['DM_SHOW_FPS']
                     self.assertEqual((s['kind'], s['section'], s['label'], s['on'], s['off'], s['default']), ('toggle', 'Game', 'Frame-rate counter', '1', '0', default))
 
+    def test_hdr_only_on_the_mac_for_a_game_that_renders_hdr(self):   # DM_HDR (nvn/hdr.c): the profile's hdr key (Ocarina of Time), the Mac front end's screens; conditions joined by &
+        oot = '0400486024DEC000'
+        s = build(oot, 'nvn', 'mac')['DM_HDR']
+        self.assertEqual((s['kind'], s['default'], s['options'], s['section']), ('choice', 'auto', [['auto', 'On (HDR screens)'], ['0', 'Off']], 'Game'))
+        self.assertNotIn('DM_HDR', build(oot, 'nvn', 'ios'))   # iOS presents SDR
+        self.assertNotIn('DM_HDR', build(BOTW, 'nvn', 'mac'))   # no hdr in its profile
+
     def test_defaults_follow_each_platform_host(self):
         # nvn_mtl.m pso4_on: Mac defaults on, iOS follows the profile. nvn_rec.h rec_on: iOS on, Mac off.
         for gid, ios_pso in ((BOTW, '1'), (WONDER, '0')):
